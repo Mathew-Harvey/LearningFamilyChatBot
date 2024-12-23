@@ -128,8 +128,8 @@ class DatabaseManager:
             query = f'''
                 SELECT m.* FROM memories m
                 JOIN family_members fm ON m.family_member_id = fm.id
-                WHERE fm.name = ? 
-                AND m.category IN ({placeholders})
+                WHERE fm.name = ?
+                  AND m.category IN ({placeholders})
                 ORDER BY m.timestamp DESC, m.importance DESC
                 LIMIT ?
             '''

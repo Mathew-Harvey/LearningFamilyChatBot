@@ -1,179 +1,207 @@
 from datetime import datetime
 import re
 import json
+import re
+from datetime import datetime
+import random
 from src.database_manager import DatabaseManager
 from src.utils import call_ollama, extract_categories, calculate_importance
+
+
+
 
 class FamilyChatbot:
     def __init__(self, db_path='family_chatbot.db'):
         """Initialize the chatbot with a database connection."""
         self.db = DatabaseManager(db_path)
-        
+        # Simple response templates for tiny LLM
+        self.templates = {
+            'greetings': [
+                "G'day {}! How's things?",
+                "Hey {}! Good to see ya!",
+                "Welcome back {}! What's new?"
+            ],
+            'technical': [
+                "Let's sort that {} issue. What's happening exactly?",
+                "Right, tell me more about the {}.",
+                "I can help with that {}. What have you tried so far?"
+            ],
+            'story': [
+                "Here's a quick story: {}",
+                "Let me tell you about {}",
+                "Got a good one about {}"
+            ],
+            'generic': [
+                "Tell me more about that!",
+                "Sounds interesting, what happened next?",
+                "That's fair dinkum! And then?"
+            ]
+        }
+
     def add_family_member(self, name, age, initial_info=None):
         """Add a new family member to track."""
         member_id = self.db.add_family_member(name, age, initial_info)
         if member_id:
             return f"Added {name} to the family circle!"
-        else:
-            return f"Failed to add {name}. They might already exist."
+        return f"Failed to add {name}. They might already exist."
 
     def chat(self, name, message):
-        """Main chat interface with improved context handling."""
-        # Get member info first
+        """Main chat interface with simplified processing for tiny LLMs."""
         member_info = self.db.get_member_info(name)
         if not member_info:
             return f"Sorry, I don't know {name}. Please add them as a family member first."
         
-        # Extract categories and importance
-        categories = extract_categories(message)
-        importance = calculate_importance(message)
+        # Analyze message and get context
+        msg_type = self._get_message_type(message)
+        categories = self._get_categories(message)
+        importance = self._calculate_importance(message)
         
-        # Store in database
+        # Store interaction
         self.db.store_memory(
             family_member_name=name,
             text=message,
-            category=categories[0],  # Use primary category
+            category=categories[0],
             importance=importance
         )
         
-        # Get relevant memories based on categories
-        recent_memories = self.db.get_relevant_memories(name, categories, limit=2)
+        # Build minimal context
+        context = self._build_minimal_context(name, member_info)
         
-        # Build focused context
-        context = self._build_context(name, member_info, recent_memories)
-        
-        # Generate and return response
-        return self._generate_response(context, message)
+        # Generate response based on message type
+        return self._generate_response(msg_type, context, message)
 
-    def _build_context(self, name, member_info, memories):
-        """Build conversation context from member info and memories."""
-        # Extract personal info
-        personal_info = {}
-        if member_info and member_info[3]:  # personal_info is at index 3
+    def _get_message_type(self, message):
+        """Determine basic message type for routing."""
+        message = message.lower()
+        if any(word in message for word in ['help', 'how', 'fix', 'repair', 'change']):
+            return 'technical'
+        elif any(word in message for word in ['story', 'tell me about']):
+            return 'story'
+        elif any(word in message for word in ['hi', 'hello', 'hey', "g'day"]):
+            return 'greeting'
+        return 'chat'
+
+    def _get_categories(self, message):
+        """Simple category matching for memory organization."""
+        categories = {
+            'technical': ['help', 'fix', 'repair', 'how to', 'problem'],
+            'personal': ['feel', 'think', 'want', 'need'],
+            'story': ['story', 'tell', 'share', 'happened'],
+            'chat': ['chat', 'talk', 'discuss']
+        }
+        
+        message = message.lower()
+        matched = []
+        for category, keywords in categories.items():
+            if any(keyword in message for keyword in keywords):
+                matched.append(category)
+        return matched if matched else ['general']
+
+    def _calculate_importance(self, message):
+        """Simple importance calculation."""
+        if any(word in message.lower() for word in ['urgent', 'emergency', 'help', 'serious']):
+            return 0.8
+        elif any(word in message.lower() for word in ['maybe', 'sometime', 'chat']):
+            return 0.3
+        return 0.5
+
+    def _build_minimal_context(self, name, member_info):
+        """Build minimal context string."""
+        context = f"User: {name}"
+        if member_info and member_info[3]:  # If personal_info exists
             try:
-                personal_info = json.loads(member_info[3])
-            except (json.JSONDecodeError, TypeError):
-                personal_info = {}
-
-        # Build initial context with member info
-        context = f"You are chatting with {name}. "
-        if personal_info:
-            context += f"About them: {', '.join(f'{k}: {v}' for k, v in personal_info.items())}.\n\n"
-        
-        # Add categorized memories
-        if memories:
-            grouped_memories = {}
-            for memory in memories:
-                category = memory[4]  # category is at index 4
-                if category not in grouped_memories:
-                    grouped_memories[category] = []
-                grouped_memories[category].append(memory[2])  # text is at index 2
-            
-            context += "Recent relevant conversations:\n"
-            for category, msgs in grouped_memories.items():
-                for msg in msgs:
-                    context += f"- {msg}\n"
-        
+                info = json.loads(member_info[3])
+                if info:
+                    context += f", Info: {', '.join(f'{k}={v}' for k, v in info.items())}"
+            except json.JSONDecodeError:
+                pass
         return context
 
-    def _generate_response(self, context, current_message):
-        """Generate a focused response using Ollama."""
-        prompt = f"""You are a friendly family chatbot assistant. Respond naturally to the current message while staying on topic.
+    def _generate_response(self, msg_type, context, message):
+        """Generate response with better prompt handling for tiny LLMs."""
+        # First determine if we need a joke, technical help, or general chat
+        if "joke" in message.lower():
+            prompt = """You're a friendly Aussie. Tell ONE short dad joke. Keep it clean and simple. Just the joke, no setup or extra text."""
+        elif msg_type == 'technical':
+            prompt = f"""You're a helpful Aussie mechanic. The user says: "{message}"
+    Give ONE short, clear response asking what specific problem they're having.
+    Just the response, no setup."""
+        else:
+            prompt = f"""You're a friendly Aussie. The user says: "{message}"
+    Give ONE casual, friendly response.
+    Just the response, no setup."""
 
-Context:
-{context}
+        try:
+            # Get response from model
+            response = call_ollama(prompt)
+            # Clean response thoroughly
+            cleaned = self._clean_response(response)
+            
+            # If response is too short or got cleaned away, use template
+            if len(cleaned) < 10:
+                if "joke" in message.lower():
+                    return "Why don't kangaroos tell jokes? Because they don't wanna get hopping mad!"
+                elif msg_type == 'technical':
+                    return "What seems to be the trouble with your bike, mate? Let's sort it out."
+                else:
+                    return random.choice(self.templates['generic'])
+            
+            return cleaned
+            
+        except Exception as e:
+            print(f"Error generating response: {e}")
+            return "G'day! Let's have a proper chat about that."
 
-Current message: {current_message}
-
-Requirements for your response:
-1. Stay focused on the current topic
-2. Don't mention previous topics unless directly relevant
-3. Keep responses concise and natural (1-2 sentences)
-4. Don't add signatures or formalities
-5. Respond as if you're having a casual conversation
-6. Don't mention that you're a chatbot or AI
-7. Don't offer reading suggestions unless specifically asked
-
-Please provide a natural response:"""
+    def _clean_response(self, response):
+        """Thoroughly clean model response."""
+        if not response:
+            return ""
+            
+        # Remove anything that looks like instructions or meta text
+        response = re.sub(r'\[.*?\]', '', response)
+        response = re.sub(r'\(.*?\)', '', response)
+        response = re.sub(r'^.*?:', '', response)  # Remove any prefix with colon
+        response = re.sub(r'Here\'s.*?:', '', response)  # Remove "Here's a..." prefixes
+        response = re.sub(r'Sure.*?:', '', response)  # Remove "Sure, here's..." prefixes
         
-        response = call_ollama(prompt)
+        # Remove common prompt leakage patterns
+        patterns_to_remove = [
+            r'You\'re a friendly Aussie.*',
+            r'As an AI.*',
+            r'Let me.*:',
+            r'I\'d be happy to.*:',
+            r'Here\'s a response.*:',
+            r'You asked for.*:',
+            r'The user says.*:',
+            r'Message:.*',
+            r'Context:.*',
+            r'User:.*',
+            r'Reply:.*',
+            r'Response:.*',
+            r'Prompt:.*'
+        ]
         
-        # Clean up response
-        response = response.replace('Response:', '').strip()
-        response = re.sub(r'\[.*?\]$', '', response).strip()  # Remove signatures
-        response = re.sub(r'Best regards,.*$', '', response, flags=re.MULTILINE).strip()
-        response = re.sub(r'Chatbot:', '', response, flags=re.MULTILINE).strip()
+        for pattern in patterns_to_remove:
+            response = re.sub(pattern, '', response, flags=re.IGNORECASE)
         
-        return response
+        # Clean up quotes and whitespace
+        response = response.replace('"', '').replace('\'', '')
+        response = ' '.join(response.split())
+        
+        # Remove any remaining system-style prefixes
+        response = re.sub(r'^(System|Assistant|Chatbot|AI):', '', response)
+        
+        return response.strip()
 
     def get_member_summary(self, name):
-        """Get a summary of interactions with a family member."""
-        # First check if member exists
+        """Get basic summary of member interactions."""
         member_info = self.db.get_member_info(name)
         if not member_info:
-            return f"No recorded interactions with {name} yet."
-        
-        # Get memory statistics
+            return f"No record found for {name}"
+            
         stats = self.db.get_memory_stats(name)
-        if not stats or stats[0] == 0:  # No memories or total_memories is 0
-            return f"No recorded interactions with {name} yet."
+        if not stats or stats[0] == 0:
+            return f"No interactions recorded with {name}"
             
         total_memories, avg_importance, latest = stats
-        
-        # Get category distribution
-        categories = self.db.get_member_categories(name)
-        
-        # Build summary
-        summary = f"Summary of interactions with {name}:\n"
-        summary += f"Total memories: {total_memories}\n"
-        
-        if categories:
-            summary += "Categories discussed:\n"
-            for category, count in categories:
-                summary += f"- {category}: {count} times\n"
-        
-        if latest:
-            summary += f"Last interaction: {latest}\n"
-            
-        if avg_importance:
-            summary += f"Average importance: {avg_importance:.2f}\n"
-                
-        return summary
-
-
-    def update_member_info(self, name, new_info):
-        """Update a family member's information."""
-        success = self.db.update_member_info(name, new_info)
-        if success:
-            return f"Updated information for {name}"
-        return f"Failed to update information for {name}"
-
-    def cleanup_old_memories(self, days=30):
-        """Clean up old memories."""
-        self.db.delete_old_memories(days)
-        return f"Cleaned up memories older than {days} days"
-    
-if __name__ == "__main__":
-    # Simple test of the chatbot
-    chatbot = FamilyChatbot()
-    print("Testing chatbot...")
-    
-    # Add a family member
-    print(chatbot.add_family_member("Alice", 35, {"role": "mother", "interests": ["reading", "gardening"]}))
-    
-    # Test chat
-    test_messages = [
-        "I spent the morning in my garden today!",
-        "The roses are blooming beautifully.",
-        "I'm thinking about adding some new flowers."
-    ]
-    
-    for message in test_messages:
-        print(f"\nUser (Alice): {message}")
-        response = chatbot.chat("Alice", message)
-        print(f"Chatbot: {response}")
-        
-    # Get member summary
-    print("\nGetting member summary...")
-    summary = chatbot.get_member_summary("Alice")
-    print(summary)
+        return f"Summary for {name}: {total_memories} chats, last chat on {latest}"
